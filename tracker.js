@@ -33,6 +33,10 @@ var gColumns = {
   "keywords": "Keywords",
 };
 
+var gDefaultComponentMap = {
+  "Loop": "Client"
+};
+
 var virtualColumns = ["milestone"];
 
 // Max dependency depth
@@ -96,7 +100,7 @@ function getFilterValue(el) {
       return el.checked ? el.value : "0";
       break;
     default:
-      return el.value;
+      return ("value" in el) ? el.value : el.textContent;
       break;
   }
 }
@@ -146,11 +150,12 @@ function buildURL() {
 }
 
 function filterChanged(evt) {
-  console.log("filterChanged", evt);
+  // console.log("filterChanged", evt);
   var requireNewFetch = false;
   var requireNewLoad = false;
 
-  if (evt.target == gFilterEls.maxdepth) {
+  if (evt.target == gFilterEls.maxdepth || evt.target == gFilterEls.product ||
+      evt.target == gFilterEls.component) {
     requireNewLoad = true;
   }
 
@@ -171,25 +176,27 @@ function filterChanged(evt) {
 
   window.localStorage.product = getFilterValue(gFilterEls.product);
   document.getElementById("list").dataset.product = window.localStorage.product;
+  window.localStorage.component = getFilterValue(gFilterEls.component);
+  document.getElementById("list").dataset.component = window.localStorage.component;
 
   if (gFilterEls.flags.checked) {
-      gColumns["flags"] = "Flags";
-      gColumns["attachments"] = "Attachment Flags";
+    gColumns["flags"] = "Flags";
+    gColumns["attachments"] = "Attachment Flags";
   } else {
-      delete gColumns["flags"];
-      delete gColumns["attachments"];
+    delete gColumns["flags"];
+    delete gColumns["attachments"];
   }
 
   window.history.pushState(gUrlParams, "", buildURL());
 
   if (requireNewFetch || requireNewLoad) {
-      // Can't start new unrelated requests when there are others pending
-      if (gHTTPRequestsInProgress || requireNewLoad) {
-          window.location = buildURL();
-          return;
-      } else {
-          loadBugs();
-      }
+    // Can't start new unrelated requests when there are others pending
+    if (gHTTPRequestsInProgress || requireNewLoad) {
+      window.location = buildURL();
+      return;
+    } else {
+      loadBugs();
+    }
   }
 
   printList(true);
@@ -217,10 +224,11 @@ function getList(blocks, depth) {
       blocksParams += "&blocks=" + gDefaultMetabug;
       metaBug = gDefaultMetabug;
     } else {
-      setStatus("No list or default meta bug specified.<br/>" +
-                "<form onsubmit='javascript:'><input type=number size=8 placeholder=Bug style='-moz-appearance:textfield' /> " +
-                "<button onclick='gUrlParams.list=this.previousElementSibling.value;filterChanged(event);'>Go</button></form>");
-      return;
+      blocksParams += buildURL();
+      // setStatus("No list or default meta bug specified.<br/>" +
+      //           "<form onsubmit='javascript:'><input type=number size=8 placeholder=Bug style='-moz-appearance:textfield' /> " +
+      //           "<button onclick='gUrlParams.list=this.previousElementSibling.value;filterChanged(event);'>Go</button></form>");
+      // return;
     }
   } else if (Array.isArray(blocks)) {
     blocksParams += "&id=" + blocks.join(",");
@@ -259,17 +267,17 @@ function getList(blocks, depth) {
   }
 
   if (gFilterEls.flags.checked) {
-      gColumns["flags"] = "Flags";
-      gColumns["attachments"] = "Attachment Flags";
+    gColumns["flags"] = "Flags";
+    gColumns["attachments"] = "Attachment Flags";
   } else {
-      delete gColumns["flags"];
-      delete gColumns["attachments"];
+    delete gColumns["flags"];
+    delete gColumns["attachments"];
   }
 
   var bzColumns = Object.keys(gColumns).filter(function(val){ return virtualColumns.indexOf(val) === -1; }); // milestone is a virtual column.
-  //console.log(bzColumns);
-  var apiURL = "https://bugzilla.mozilla.org/bzapi/bug" +
-      "?" + blocksParams.replace(/^&/, "") +
+  // console.log(bzColumns);
+  var apiURL = "https://bugzilla.mozilla.org/rest/bug" +
+    "?" + blocksParams.replace(/^[?&]*/, "") +
     "&include_fields=depends_on," + bzColumns.join(",");
 
   var hasFlags = gFilterEls.flags.checked;
@@ -315,8 +323,42 @@ function getList(blocks, depth) {
   gHTTPRequestsInProgress++;
 }
 
+function APIRequest(URL, callback) {
+  var req = new XMLHttpRequest();
+  req.onreadystatechange = function progressListener() {
+    if (this.readyState == 4) {
+      if (this.status == 200) {
+        var data = null;
+        try {
+          data = JSON.parse(this.responseText);
+        } catch (ex) {
+          callback(ex.message);
+          return;
+        }
+        callback.call(this, null, data);
+      } else {
+        callback(this.statusText);
+      }
+    }
+  };
+  req.onloadend = function loadend() {
+    req = null;
+    gHTTPRequestsInProgress--;
+  };
+  req.onerror = function xhr_error(evt) {
+    callback("There was an error with a request: " + evt.target.statusText);
+    req = null;
+  };
+
+  req.open("GET", "https://bugzilla.mozilla.org/rest" + URL, true);
+  req.setRequestHeader("Accept",       "application/json");
+  req.setRequestHeader("Content-Type", "application/json");
+  req.send();
+  gHTTPRequestsInProgress++;
+}
+
 function flagText(flag, html) {
-  var text = flag.name + flag.status + (flag.requestee ? "(" + shortenUsername(flag.requestee.name) + ")" : "");
+  var text = flag.name + flag.status + (flag.requestee ? "(" + shortenUsername(flag.requestee.name || flag.requestee) + ")" : "");
   if (html && flag.status == "?") {
     var span = document.createElement("span");
     span.className = "flag";
@@ -379,6 +421,7 @@ function printList(unthrottled) {
 
   var resolvedFilter = getFilterValue(gFilterEls.resolved);
   var productFilter = getFilterValue(gFilterEls.product);
+  var componentFilter = getFilterValue(gFilterEls.component);
   var metaFilter = getFilterValue(gFilterEls.meta);
   var mMinusFilter = getFilterValue(gFilterEls.mMinus);
 
@@ -396,7 +439,8 @@ function printList(unthrottled) {
       return;
     }
 
-    if ((productFilter && bug.product != productFilter) || bug.product == "Thunderbird" || bug.product == "Seamonkey") {
+    if ((productFilter && bug.product != productFilter) || (componentFilter && bug.component != componentFilter) ||
+        bug.product == "Thunderbird" || bug.product == "Seamonkey") {
       return;
     }
 
@@ -453,10 +497,11 @@ function printList(unthrottled) {
             }
           }
         } else {
-          console.log(bug[column]);
+          // console.log(bug[column]);
           col.textContent = "ARRAY";
         }
       } else if (typeof(bug[column]) == "object") { // Objects
+
         col.textContent =  (bug[column].name ? shortenUsername(bug[column].name) : '');
         col.dataset[column] = col.textContent;
       } else if (column == "id" || column == "summary") {
@@ -539,7 +584,7 @@ function setStatus(message) {
 }
 
 function parseQueryParams() {
-  console.log("parseQueryParams");
+  // console.log("parseQueryParams");
   var match,
       pl     = /\+/g,  // Regex for replacing addition symbol with a space
       search = /([^&=]+)=?([^&]*)/g,
@@ -554,10 +599,12 @@ function parseQueryParams() {
 };
 
 function loadFilterValues(state) {
-  console.log("loadFilterValues", state);
+  // console.log("loadFilterValues", state);
   gFilterEls.resolved.value = ("resolved" in state ? state.resolved : window.localStorage.showResolved);
   gFilterEls.product.value = ("product" in state ? state.product : window.localStorage.product);
   document.getElementById("list").dataset.product = gFilterEls.product.value;
+  gFilterEls.component.value = ("component" in state ? state.component : window.localStorage.component);
+  document.getElementById("list").dataset.component = gFilterEls.component.value;
   gFilterEls.meta.checked = ("meta" in state ? state.meta : window.localStorage.showMeta) !== "0";
   gFilterEls.mMinus.checked = ("mMinus" in state ? state.mMinus : window.localStorage.showMMinus) === "1";
   gFilterEls.flags.checked = ("flags" in state ? state.flags : window.localStorage.showFlags) === "1";
@@ -567,7 +614,7 @@ function loadFilterValues(state) {
   gSortDirection = ("sortDir" in state ? state.sortDir : window.localStorage.sortDirection);
 }
 
-function start() {
+function setupFormFields(callback) {
   var fileBugList = document.querySelector("#file > ul");
   var listbox = document.getElementById("metabugs");
   listbox.textContent = 'Metabugs: ';
@@ -582,29 +629,67 @@ function start() {
 
   gFilterEls.resolved = document.getElementById("showResolved");
   gFilterEls.product = document.getElementById("productChooser");
+  gFilterEls.component = document.getElementById("componentChooser");
   gFilterEls.meta = document.getElementById("showMeta");
   gFilterEls.mMinus = document.getElementById("showMMinus");
   gFilterEls.flags = document.getElementById("showFlags");
   gFilterEls.maxdepth = document.getElementById("maxDepth");
   gFilterEls.whiteboard = document.getElementById("whiteboardFilter");
 
+  if (!hasDefaultValue(gFilterEls.product)) {
+    // Dynamically load the available components.
+    var product = getFilterValue(gFilterEls.product);
+    APIRequest("/product/" + product, function(err, data) {
+      if (err) {
+        setStatus(err);
+        return;
+      }
+
+      var components = data.products[0].components;
+      var compSelect = gFilterEls.component;
+      // Now populate the components dropdown.
+      var option;
+      while (option = compSelect.firstElementChild.nextElementSibling) {
+        compSelect.removeChild(option);
+      }
+      components.forEach(function(component) {
+        option = compSelect.appendChild(document.createElement("option"));
+        option.innerHTML = component.name;
+        option.setAttribute("value", component.name);
+      });
+
+      addFormListeners();
+      callback();
+    });
+  } else {
+    addFormListeners();
+    callback();
+  }  
+}
+
+function addFormListeners() {
   parseQueryParams();
 
   if (window.localStorage.showFlags === "1") {
-      gColumns["flags"] = "Flags";
-      gColumns["attachments"] = "Attachment Flags";
+    gColumns["flags"] = "Flags";
+    gColumns["attachments"] = "Attachment Flags";
   }
 
   // Add filter listeners after loading values
   gFilterEls.resolved.addEventListener("change", filterChanged);
   gFilterEls.product.addEventListener("change", filterChanged);
+  gFilterEls.component.addEventListener("change", filterChanged);
   gFilterEls.meta.addEventListener("change", filterChanged);
   gFilterEls.mMinus.addEventListener("change", filterChanged);
   gFilterEls.flags.addEventListener("change", filterChanged);
   gFilterEls.maxdepth.addEventListener("input", filterChanged);
   gFilterEls.whiteboard.addEventListener("input", filterChanged);
+}
 
-  loadBugs();
+function start() {
+  setupFormFields(function() {
+    loadBugs();
+  });
 }
 
 function loadBugs() {
