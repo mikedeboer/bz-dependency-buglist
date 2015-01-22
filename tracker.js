@@ -133,8 +133,8 @@ function buildURL() {
     if (hasDefaultValue(gFilterEls[paramName]))
       return;
 
-    // meta defaults to 1.
-    if (paramName == "meta" && filterVal == "1")
+    // meta defaults to 0.
+    if (paramName == "meta" && filterVal == "0")
       return;
 
     if (paramName == "maxdepth" && filterVal == MAX_DEPTH)
@@ -444,7 +444,7 @@ function printList(unthrottled) {
       return;
     }
 
-    if (metaFilter === "0" && bug.keywords && bug.keywords.indexOf("meta") != -1) {
+    if (metaFilter === "0" && ((bug.keywords && bug.keywords.indexOf("meta") != -1) || (bug.summary && bug.summary.indexOf("[meta") === 0))) {
       return;
     }
 
