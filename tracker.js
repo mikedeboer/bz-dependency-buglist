@@ -636,9 +636,9 @@ function setupFormFields(callback) {
   gFilterEls.maxdepth = document.getElementById("maxDepth");
   gFilterEls.whiteboard = document.getElementById("whiteboardFilter");
 
-  if (!hasDefaultValue(gFilterEls.product)) {
+  var product = getFilterValue(gFilterEls.product);
+  if (product) {
     // Dynamically load the available components.
-    var product = getFilterValue(gFilterEls.product);
     APIRequest("/product/" + product, function(err, data) {
       if (err) {
         setStatus(err);
